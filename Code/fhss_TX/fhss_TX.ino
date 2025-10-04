@@ -1,138 +1,150 @@
 /*
-Implementation of FHSS algoritm with nRF24L01 and other similar products
-Version 1.0 (16/05/2017)
-Copyright (C) 2017 Massimo Guercini guercini@gmail.com
+ * FHSS Передатчик для ESP32-S3 с nRF24L01
+ * Передает сообщение "Hello World" с переключением по 10 каналам
+ * Автор: AI Assistant
+ */
 
-This program is free software: you  can redistribute it and/or modify it
-under the  terms of the GNU  General Public License as  published by the
-Free Software Foundation,  either version 3 of the License,  or (at your
-option) any later version.
-
-This  program  is distributed  in  the  hope  that  it will  be  useful,
-but  WITHOUT  ANY  WARRANTY;  without   even  the  implied  warranty  of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
-Public License for more details.
-
-You should have received a copy  of the GNU General Public License along
-with this program. If not, see <http://www.gnu.org/licenses/>.
-
-###########################
-!!!!!!! Code for TX !!!!!!!
-###########################
-*/
-
-// Setup for nRF24L01
 #include <SPI.h>
-#include "nRF24L01.h"
-#include "RF24.h"
-#include "printf.h"
-#include "esp32-hal-timer.h"
-RF24 radio(7, 6);
-const uint64_t pipes[2] = { 0xABCDABCD71LL, 0x544d52687CLL };	// Address of PTX and PRX
-int interrupt_time = 10; // In millisenconds (Do not overdo it with too short interrupt time)
-byte Int_cnt = 0; // Interrupt counter
-byte Int_TX_cnt = 5; // Setting up the number of interrupts count that trig the data tramission 
-volatile boolean fired = false;
-hw_timer_t *timer = NULL;
-// Channels hopping schema (Each number MUST BE unique in the sequence)
-// It's possible to use non unique number in sequence, but in this case we must send the ptr_fhss_schema value to PRX
-// thought the data_TX struct to align ptr_fhss_schema of PRX
-// However, I prefer the sequence of unique numbers
-byte fhss_schema[]={11, 46, 32, 49, 2, 19, 3, 33, 30, 14, 9, 13, 6, 1, 34, 39, 44, 43, 54, 24, 42, 37, 31};	// You can do it as long as you like
-byte ptr_fhss_schema = 0; // Pointer to the fhss_schema array
+#include <nRF24L01.h>
+#include <RF24.h>
 
-typedef struct{	// Struct of data to send to PRX
-	int var1_value;
-	int var2_value;
-	int var3_value;
-	int var4_value;
-	byte var5_value;
-}
-A_t;
+// Подключение nRF24L01 к ESP32-S3
+#define CE_PIN    4   // Можно использовать любой GPIO
+#define CSN_PIN   5
+#define MOSI_PIN   15
+#define MISO_PIN   12
+#define SCK_PIN   18   // Можно использовать любой GPIO
+// SPI пины для ESP32-S3:
+// MOSI: 11 (GPIO11)
+// MISO: 13 (GPIO13) 
+// SCK:  12 (GPIO12)
 
-typedef struct{	// Struct of data received from PRX
-	int var1_value;
-	int var2_value;
-	int var3_value;
-	int var4_value;
-	int var5_value;
-	int var6_value;
-}
-B_t;
+// Создание объекта радио
+RF24 radio(CE_PIN, CSN_PIN);
 
-A_t data_TX;
-B_t data_RX;
+// FHSS конфигурация
+const byte FHSS_CHANNELS[] = {5, 15, 25, 35, 45, 55, 65, 75, 85, 95};
+const byte CHANNEL_COUNT = sizeof(FHSS_CHANNELS);
+const unsigned long CHANNEL_TIME = 10; // 10 мс на канал
 
-void setup()
-{
-	Serial.begin(115200);
-	printf_begin();
-	radio.begin();
-	radio.setPALevel(RF24_PA_LOW); // RF24_PA_MIN (-18dBm), RF24_PA_LOW (-12dBm), RF24_PA_HIGH (-6dBM), RF24_PA_MAX (0dBm)
-	radio.setRetries(4,9);
-	radio.setAutoAck(1);
-	radio.enableAckPayload();
-	radio.enableDynamicPayloads();
-	radio.setDataRate(RF24_250KBPS);
-	radio.setChannel(fhss_schema[ptr_fhss_schema]);
-	radio.openWritingPipe(pipes[1]);
-	radio.openReadingPipe(1,pipes[0]);
-//	Setup some initial data value
-	data_TX.var1_value=1;
-	data_TX.var2_value=2;
-	data_TX.var3_value=3;
-	data_TX.var4_value=4;
-	data_TX.var5_value=0x05;
-	radio.startListening();
-	radio.printDetails();
-	// Setup interrupt every interrupt_time value
-	// CTC mode with clk/8 prescaler
+// Адреса для связи
+const byte addresses[][6] = {"TX001", "RX002"};
 
+// Структура пакета данных
+struct DataPacket {
+  byte sequenceNumber;    // Номер пакета в последовательности
+  byte channelIndex;      // Индекс текущего канала
+  unsigned long timestamp;// Временная метка
+  char data[16];         // Данные (часть сообщения)
+  byte checksum;         // Контрольная сумма
+};
+
+// Переменные
+DataPacket packet;
+unsigned long lastChannelSwitch = 0;
+byte currentChannelIndex = 0;
+byte sequenceNumber = 0;
+String message = "Hello World";
+unsigned long messageStartTime = 0;
+boolean messageComplete = false;
+
+// Функция расчета контрольной суммы
+byte calculateChecksum(const DataPacket& pkt) {
+  byte sum = 0;
+  sum ^= pkt.sequenceNumber;
+  sum ^= pkt.channelIndex;
+  sum ^= (pkt.timestamp & 0xFF);
+  for (int i = 0; i < 16; i++) {
+    sum ^= pkt.data[i];
+  }
+  return sum;
 }
 
+void setup() {
+  Serial.begin(115200);
+  while (!Serial) delay(10);
+  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CSN_PIN);
+  Serial.println("FHSS Передатчик ESP32-S3 + nRF24L01");
+  Serial.println("Инициализация...");
 
-void loop()
-{
-	if(fired) {	// When the interrupt occurred, we need to perform the following task  
-		fired=false;	// Reset fired flag
-		Int_cnt++;	// Increment Interrupts counter
-		if(Int_cnt==(Int_TX_cnt-1)) {	// If it's time to perform channel change (10ms before trasmission time)
-			ptr_fhss_schema++;	// Increment pointer of fhss schema array to perform next channel change
-			if(ptr_fhss_schema >= sizeof(fhss_schema)) ptr_fhss_schema=0;	// To avoid array indexing overflow
-			radio.setChannel(fhss_schema[ptr_fhss_schema]);	// Change channel
-		}
-	}
-	if(Int_cnt == Int_TX_cnt) {	// If it's time to transmit.
-		radio.stopListening();
-		radio.write( &data_TX, sizeof(data_TX) );
-		if(radio.isAckPayloadAvailable())	// If we received data in ACK Payload, read and print values.
-		{
-			radio.read(&data_RX, sizeof(data_RX));
-			Serial.print("Data from RX station : ");
-			Serial.print(data_RX.var1_value);
-			Serial.print(", ");
-			Serial.print(data_RX.var2_value);
-			Serial.print(", ");
-			Serial.print(data_RX.var3_value);
-			Serial.print(", ");
-			Serial.print(data_RX.var4_value);
-			Serial.print(", ");
-			Serial.print(data_RX.var5_value);
-			Serial.print(", ");
-			Serial.println(data_RX.var6_value);
-		}
-		radio.startListening();
-		Int_cnt = 0;
-	} 
-  else 
-  {
-	// Put here your code to retrive data to send to PRX
-	// I setup some value as example
-		data_TX.var1_value++;
-		data_TX.var2_value++;
-		data_TX.var3_value++;
-		data_TX.var4_value++;
-		data_TX.var5_value++;
-	}
+  // Инициализация nRF24L01
+  if (!radio.begin()) {
+    Serial.println("ОШИБКА: nRF24L01 не отвечает!");
+    while (1) delay(1000);
+  }
+
+  // Настройка радио
+  radio.setAutoAck(false);          // Отключаем автоподтверждение
+  radio.setRetries(0, 0);          // Отключаем повторы
+  radio.setDataRate(RF24_1MBPS);   // Скорость 1 Мбит/с
+  radio.setPALevel(RF24_PA_HIGH);  // Максимальная мощность
+  radio.setPayloadSize(sizeof(DataPacket));
+  
+  // Открываем канал для передачи
+  radio.openWritingPipe(addresses[0]);
+  radio.stopListening();
+
+  Serial.println("Радио инициализировано успешно");
+  Serial.print("Размер пакета: ");
+  Serial.println(sizeof(DataPacket));
+  Serial.println("Начинаем передачу FHSS...");
+  
+  messageStartTime = millis();
 }
 
+void loop() {
+  unsigned long currentTime = millis();
+  
+  // Переключение каналов каждые CHANNEL_TIME мс
+  if (currentTime - lastChannelSwitch >= CHANNEL_TIME) {
+    // Переходим на следующий канал
+    currentChannelIndex = (currentChannelIndex + 1) % CHANNEL_COUNT;
+    radio.setChannel(FHSS_CHANNELS[currentChannelIndex]);
+    lastChannelSwitch = currentTime;
+    
+    // Формируем пакет для передачи
+    packet.sequenceNumber = sequenceNumber++;
+    packet.channelIndex = currentChannelIndex;
+    packet.timestamp = currentTime - messageStartTime;
+    
+    // Очищаем массив данных
+    memset(packet.data, 0, sizeof(packet.data));
+    
+    // Определяем какую часть сообщения передавать
+    int messageLength = message.length();
+    int packetDataSize = sizeof(packet.data) - 1; // -1 для null terminator
+    int totalPackets = (messageLength + packetDataSize - 1) / packetDataSize;
+    
+    // Рассчитываем индекс пакета в цикле передачи сообщения
+    int messagePacketIndex = (sequenceNumber - 1) % totalPackets;
+    int startPos = messagePacketIndex * packetDataSize;
+    int endPos = min(startPos + packetDataSize, messageLength);
+    
+    // Копируем соответствующую часть сообщения
+    for (int i = startPos; i < endPos; i++) {
+      packet.data[i - startPos] = message[i];
+    }
+    
+    // Рассчитываем контрольную сумму
+    packet.checksum = calculateChecksum(packet);
+    
+    // Передаем пакет
+    bool result = radio.write(&packet, sizeof(packet));
+    
+    // Вывод информации о передаче
+    Serial.print("CH:");
+    Serial.print(FHSS_CHANNELS[currentChannelIndex]);
+    Serial.print(" SEQ:");
+    Serial.print(packet.sequenceNumber);
+    Serial.print(" DATA:'");
+    Serial.print(packet.data);
+    Serial.print("' ");
+    Serial.print(result ? "OK" : "FAIL");
+    Serial.print(" (");
+    Serial.print(2400 + FHSS_CHANNELS[currentChannelIndex]);
+    Serial.println(" МГц)");
+  }
+  
+  // Небольшая задержка для стабильности
+  delay(1);
+}
