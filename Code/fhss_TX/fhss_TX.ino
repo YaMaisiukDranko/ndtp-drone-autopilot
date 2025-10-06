@@ -1,150 +1,106 @@
-/*
- * FHSS Передатчик для ESP32-S3 с nRF24L01
- * Передает сообщение "Hello World" с переключением по 10 каналам
- * Автор: AI Assistant
- */
-
 #include <SPI.h>
-#include <nRF24L01.h>
 #include <RF24.h>
+#include <string.h>  // Для strcmp
 
-// Подключение nRF24L01 к ESP32-S3
-#define CE_PIN    4   // Можно использовать любой GPIO
-#define CSN_PIN   5
-#define MOSI_PIN   15
-#define MISO_PIN   12
-#define SCK_PIN   18   // Можно использовать любой GPIO
-// SPI пины для ESP32-S3:
-// MOSI: 11 (GPIO11)
-// MISO: 13 (GPIO13) 
-// SCK:  12 (GPIO12)
+// Пины для передатчика
+#define TX_CE_PIN 4
+#define TX_CSN_PIN 5
+#define TX_MOSI_PIN 15
+#define TX_MISO_PIN 12
+#define TX_SCK_PIN 18
 
-// Создание объекта радио
-RF24 radio(CE_PIN, CSN_PIN);
+// Инициализация радио
+RF24 radio(TX_CE_PIN, TX_CSN_PIN);
 
-// FHSS конфигурация
-const byte FHSS_CHANNELS[] = {5, 15, 25, 35, 45, 55, 65, 75, 85, 95};
-const byte CHANNEL_COUNT = sizeof(FHSS_CHANNELS);
-const unsigned long CHANNEL_TIME = 10; // 10 мс на канал
+// Адреса труб (для двунаправленного обмена)
+const uint64_t txPipe = 0xF0F0F0F0E1LL;  // Адрес для передачи от передатчика
+const uint64_t rxPipe = 0xF0F0F0F0D2LL;  // Адрес для приема ответов от приемника
 
-// Адреса для связи
-const byte addresses[][6] = {"TX001", "RX002"};
+// Сообщения
+const char syncMsg[] = "SYNC";
+const char customAck[] = "OK";  // Простое ответное сообщение
+const uint32_t message = 102030;
 
-// Структура пакета данных
-struct DataPacket {
-  byte sequenceNumber;    // Номер пакета в последовательности
-  byte channelIndex;      // Индекс текущего канала
-  unsigned long timestamp;// Временная метка
-  char data[16];         // Данные (часть сообщения)
-  byte checksum;         // Контрольная сумма
-};
+bool synced = false;
+unsigned long startTime;
 
-// Переменные
-DataPacket packet;
-unsigned long lastChannelSwitch = 0;
-byte currentChannelIndex = 0;
-byte sequenceNumber = 0;
-String message = "Hello World";
-unsigned long messageStartTime = 0;
-boolean messageComplete = false;
+uint8_t channels[] = {80, 81, 82, 83, 84, 85, 86, 87, 88, 89};
+const int CH_COUNT = sizeof(channels) / sizeof(channels[0]);
 
-// Функция расчета контрольной суммы
-byte calculateChecksum(const DataPacket& pkt) {
-  byte sum = 0;
-  sum ^= pkt.sequenceNumber;
-  sum ^= pkt.channelIndex;
-  sum ^= (pkt.timestamp & 0xFF);
-  for (int i = 0; i < 16; i++) {
-    sum ^= pkt.data[i];
+uint8_t getFHSSChannel(uint32_t seed, int step) {
+  randomSeed(seed);
+  for (int i = 0; i < step; i++) {
+    random();
   }
-  return sum;
+  uint8_t idx = random(CH_COUNT);
+  return channels[idx];
 }
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial) delay(10);
-  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CSN_PIN);
-  Serial.println("FHSS Передатчик ESP32-S3 + nRF24L01");
-  Serial.println("Инициализация...");
-
-  // Инициализация nRF24L01
+  
+  // Инициализация SPI с кастомными пинами
+  SPI.begin(TX_SCK_PIN, TX_MISO_PIN, TX_MOSI_PIN, TX_CSN_PIN);
+  
   if (!radio.begin()) {
-    Serial.println("ОШИБКА: nRF24L01 не отвечает!");
-    while (1) delay(1000);
+    Serial.println("radio hardware is not responding!");
+    while (1);
   }
-
-  // Настройка радио
-  radio.setAutoAck(false);          // Отключаем автоподтверждение
-  radio.setRetries(0, 0);          // Отключаем повторы
-  radio.setDataRate(RF24_1MBPS);   // Скорость 1 Мбит/с
-  radio.setPALevel(RF24_PA_HIGH);  // Максимальная мощность
-  radio.setPayloadSize(sizeof(DataPacket));
   
-  // Открываем канал для передачи
-  radio.openWritingPipe(addresses[0]);
+  // Отключаем встроенный ACK
+  radio.setAutoAck(false);
+  radio.setDataRate(RF24_1MBPS);
+  radio.setPALevel(RF24_PA_HIGH);
+  radio.openWritingPipe(txPipe);
+  radio.openReadingPipe(1, rxPipe);
   radio.stopListening();
-
-  Serial.println("Радио инициализировано успешно");
-  Serial.print("Размер пакета: ");
-  Serial.println(sizeof(DataPacket));
-  Serial.println("Начинаем передачу FHSS...");
   
-  messageStartTime = millis();
+  Serial.println("Transmitter started, waiting for sync...");
 }
 
 void loop() {
-  unsigned long currentTime = millis();
-  
-  // Переключение каналов каждые CHANNEL_TIME мс
-  if (currentTime - lastChannelSwitch >= CHANNEL_TIME) {
-    // Переходим на следующий канал
-    currentChannelIndex = (currentChannelIndex + 1) % CHANNEL_COUNT;
-    radio.setChannel(FHSS_CHANNELS[currentChannelIndex]);
-    lastChannelSwitch = currentTime;
+  if (!synced) {
+    radio.setChannel(80);  // Фиксированный канал для синхронизации
+    radio.stopListening();  // Режим передачи
+    bool sent = radio.write(&syncMsg, sizeof(syncMsg));
+    Serial.println(sent ? "Sync message sent" : "Sync send failed");
     
-    // Формируем пакет для передачи
-    packet.sequenceNumber = sequenceNumber++;
-    packet.channelIndex = currentChannelIndex;
-    packet.timestamp = currentTime - messageStartTime;
-    
-    // Очищаем массив данных
-    memset(packet.data, 0, sizeof(packet.data));
-    
-    // Определяем какую часть сообщения передавать
-    int messageLength = message.length();
-    int packetDataSize = sizeof(packet.data) - 1; // -1 для null terminator
-    int totalPackets = (messageLength + packetDataSize - 1) / packetDataSize;
-    
-    // Рассчитываем индекс пакета в цикле передачи сообщения
-    int messagePacketIndex = (sequenceNumber - 1) % totalPackets;
-    int startPos = messagePacketIndex * packetDataSize;
-    int endPos = min(startPos + packetDataSize, messageLength);
-    
-    // Копируем соответствующую часть сообщения
-    for (int i = startPos; i < endPos; i++) {
-      packet.data[i - startPos] = message[i];
+    radio.startListening();  // Переключаемся в режим приема для ожидания ответа
+    unsigned long timeoutStart = millis();
+    bool ackReceived = false;
+    while (millis() - timeoutStart < 1000) {
+      if (radio.available()) {
+        char buf[10] = {0};
+        radio.read(&buf, sizeof(buf));
+        if (strcmp(buf, customAck) == 0) {
+          ackReceived = true;
+          break;
+        }
+      }
     }
+    radio.stopListening();
     
-    // Рассчитываем контрольную сумму
-    packet.checksum = calculateChecksum(packet);
+    if (ackReceived) {
+      synced = true;
+      startTime = millis();
+      Serial.println("Custom ACK ('OK') received, starting FHSS transmission");
+    } else {
+      Serial.println("No custom ACK, retrying SYNC...");
+      delay(500);
+    }
+  } else {
+    // FHSS-передача
+    unsigned long currentTime = millis();
+    int step = (currentTime - startTime) / 500;
+    uint8_t ch = getFHSSChannel(987654321, step);
+    radio.setChannel(ch);
     
-    // Передаем пакет
-    bool result = radio.write(&packet, sizeof(packet));
-    
-    // Вывод информации о передаче
-    Serial.print("CH:");
-    Serial.print(FHSS_CHANNELS[currentChannelIndex]);
-    Serial.print(" SEQ:");
-    Serial.print(packet.sequenceNumber);
-    Serial.print(" DATA:'");
-    Serial.print(packet.data);
-    Serial.print("' ");
-    Serial.print(result ? "OK" : "FAIL");
-    Serial.print(" (");
-    Serial.print(2400 + FHSS_CHANNELS[currentChannelIndex]);
-    Serial.println(" МГц)");
+    radio.stopListening();
+    bool ok = radio.write(&message, sizeof(message));
+    radio.startListening();  // Готовимся к возможным ответам, но в FHSS не используем
+    Serial.print("Sent message on channel ");
+    Serial.print(ch);
+    Serial.println(ok ? " SUCCESS" : " FAIL");
+    delay(500);
   }
-  
-  // Небольшая задержка для стабильности
-  delay(1);
 }
