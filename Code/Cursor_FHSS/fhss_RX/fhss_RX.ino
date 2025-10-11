@@ -6,13 +6,14 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RF24.h>
+#include "telemetry.h"
 
 // ====== Pin configuration (adjust to your wiring) ======
 #ifndef NRF24_CE_PIN
-#define NRF24_CE_PIN 8    // CHANGE to your CE pin
+#define NRF24_CE_PIN 2    // CHANGE to your CE pin
 #endif
 #ifndef NRF24_CSN_PIN
-#define NRF24_CSN_PIN 9  // CHANGE to your CSN (CS) pin
+#define NRF24_CSN_PIN 3  // CHANGE to your CSN (CS) pin
 #endif
 
 #define MOSI_PIN   6
@@ -53,6 +54,8 @@ static uint8_t currentChannelIndex = 0;
 static uint16_t telemetrySequence = 0;
 static uint32_t lastPacketMillis = 0;
 static uint32_t lastControlOutput = 0;
+static TelemetryData telemetryData;
+static uint32_t lastTelemetryRead = 0;
 
 // ====== Helpers ======
 static void setRadioChannel(uint8_t channel)
@@ -89,22 +92,24 @@ static void prepareAckTelemetry()
         return;
     }
 
-    // After sync: build telemetry from Serial input; truncate to 24 bytes
+    // After sync: read telemetry from sensors and format it
     TelemetryPacket tp = {};
     tp.sequence = telemetrySequence++;
 
-    char temp[64] = {0};
-    size_t readLen = 0;
-    uint32_t tStart = millis();
-    while (Serial.available() && readLen < sizeof(temp) - 1) {
-        int c = Serial.read();
-        if (c < 0) break;
-        temp[readLen++] = (char)c;
-        if (millis() - tStart > 2) break;
+    // Read telemetry data from sensors every 50ms to avoid overwhelming
+    if (millis() - lastTelemetryRead > 50) {
+        readTelemetryData(&telemetryData);
+        lastTelemetryRead = millis();
     }
-    tp.payloadLength = (uint8_t)min<size_t>(readLen, sizeof(tp.payload));
+
+    // Format telemetry data as string
+    char telemetryString[64] = {0};
+    formatTelemetryString(&telemetryData, telemetryString, sizeof(telemetryString));
+
+    // Copy formatted data to packet payload
+    tp.payloadLength = (uint8_t)min<size_t>(strlen(telemetryString), sizeof(tp.payload));
     if (tp.payloadLength > 0) {
-        memcpy(tp.payload, temp, tp.payloadLength);
+        memcpy(tp.payload, telemetryString, tp.payloadLength);
     }
 
     // Always prepare ACK payload, even if empty
@@ -189,6 +194,11 @@ void setup()
 {
     Serial.begin(115200);
     delay(50);
+
+    // Initialize telemetry sensors
+    if (!initializeTelemetrySensors()) {
+        Serial.println("WARNING: Some telemetry sensors failed to initialize!");
+    }
 
     SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, NRF24_CSN_PIN);
 
