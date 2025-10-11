@@ -50,7 +50,7 @@ void setup() {
   // Отключаем встроенный ACK
   radio.setAutoAck(false);
   radio.setDataRate(RF24_1MBPS);
-  radio.setPALevel(RF24_PA_HIGH);
+  radio.setPALevel(RF24_PA_LOW);
   radio.openWritingPipe(txPipe);
   radio.openReadingPipe(1, rxPipe);
   radio.stopListening();
