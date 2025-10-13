@@ -174,6 +174,15 @@ static void sendControlAndReadTelemetry()
                 Serial.print("TEL:");
                 Serial.write((const uint8_t*)telemetry.payload, telemetry.payloadLength);
                 Serial.println();
+                
+                // Debug: print received payload length
+                Serial.print("TEL_DEBUG_TX: len=");
+                Serial.print(telemetry.payloadLength);
+                Serial.print(" data='");
+                for (int i = 0; i < telemetry.payloadLength; i++) {
+                    Serial.print((char)telemetry.payload[i]);
+                }
+                Serial.println("'");
             }
             lastAckMillis = millis();
         }

@@ -76,13 +76,22 @@ void readTelemetryData(TelemetryData* data) {
 void formatTelemetryString(const TelemetryData* data, char* output, size_t maxLen) {
     if (data == nullptr || output == nullptr || maxLen == 0) return;
     
-    // Format: accel_x:accel_y:accel_z.gyro_x:gyro_y:gyro_z.pressure.distance
-    // Example: 1.23:4.56:7.89.0.12:0.34:0.56.1013.25.1500.0
+    // Ultra-compact format to fit in 24 bytes
+    // Format: aX:aY:aZ.gX:gY:gZ.p.d
+    // Example: 1.2:4.5:7.8.0.1:0.3:0.5.1013.1500
     
-    int len = snprintf(output, maxLen, "%.2f:%.2f:%.2f.%.2f:%.2f:%.2f.%.2f.%.1f",
+    int len = snprintf(output, maxLen, "%.1f:%.1f:%.1f.%.1f:%.1f:%.1f.%.0f.%.0f",
         data->accel_x, data->accel_y, data->accel_z,
         data->gyro_x, data->gyro_y, data->gyro_z,
         data->pressure, data->distance);
+    
+    // If still too long, use even more compact format
+    if (len >= (int)maxLen - 1) {
+        len = snprintf(output, maxLen, "%.0f:%.0f:%.0f.%.0f:%.0f:%.0f.%.0f.%.0f",
+            data->accel_x, data->accel_y, data->accel_z,
+            data->gyro_x, data->gyro_y, data->gyro_z,
+            data->pressure, data->distance);
+    }
     
     // Ensure null termination
     if (len >= (int)maxLen) {

@@ -8,17 +8,18 @@
 #include <RF24.h>
 #include "telemetry.h"
 
-// ====== Pin configuration (adjust to your wiring) ======
+// ====== Pin configuration for ESP32-C6 Supermini ======
 #ifndef NRF24_CE_PIN
-#define NRF24_CE_PIN 2    // CHANGE to your CE pin
+#define NRF24_CE_PIN 7    // CE pin for ESP32-C6 Supermini
 #endif
 #ifndef NRF24_CSN_PIN
-#define NRF24_CSN_PIN 3  // CHANGE to your CSN (CS) pin
+#define NRF24_CSN_PIN 18  // CSN pin for ESP32-C6 Supermini
 #endif
 
-#define MOSI_PIN   6
-#define MISO_PIN   5
-#define SCK_PIN   4
+#define MOSI_PIN   14
+#define MISO_PIN   15
+#define SCK_PIN    9
+
 
 static RF24 radio(NRF24_CE_PIN, NRF24_CSN_PIN);
 
@@ -56,6 +57,7 @@ static uint32_t lastPacketMillis = 0;
 static uint32_t lastControlOutput = 0;
 static TelemetryData telemetryData;
 static uint32_t lastTelemetryRead = 0;
+static uint8_t telemetryPacketIndex = 0; // 0=accel, 1=gyro, 2=pressure, 3=distance
 
 // ====== Helpers ======
 static void setRadioChannel(uint8_t channel)
@@ -102,15 +104,45 @@ static void prepareAckTelemetry()
         lastTelemetryRead = millis();
     }
 
-    // Format telemetry data as string
-    char telemetryString[64] = {0};
-    formatTelemetryString(&telemetryData, telemetryString, sizeof(telemetryString));
+    // Send telemetry in parts to fit in 24 bytes
+    char telemetryString[32] = {0};
+    
+    switch (telemetryPacketIndex) {
+        case 0: // Accelerometer
+            snprintf(telemetryString, sizeof(telemetryString), "A:%.1f:%.1f:%.1f",
+                telemetryData.accel_x, telemetryData.accel_y, telemetryData.accel_z);
+            break;
+        case 1: // Gyroscope
+            snprintf(telemetryString, sizeof(telemetryString), "G:%.1f:%.1f:%.1f",
+                telemetryData.gyro_x, telemetryData.gyro_y, telemetryData.gyro_z);
+            break;
+        case 2: // Pressure
+            snprintf(telemetryString, sizeof(telemetryString), "P:%.0f",
+                telemetryData.pressure);
+            break;
+        case 3: // Distance
+            snprintf(telemetryString, sizeof(telemetryString), "D:%.0f",
+                telemetryData.distance);
+            break;
+    }
+    
+    // Debug: print telemetry string
+    Serial.print("TEL_DEBUG: idx=");
+    Serial.print(telemetryPacketIndex);
+    Serial.print(" len=");
+    Serial.print(strlen(telemetryString));
+    Serial.print(" str='");
+    Serial.print(telemetryString);
+    Serial.println("'");
 
     // Copy formatted data to packet payload
     tp.payloadLength = (uint8_t)min<size_t>(strlen(telemetryString), sizeof(tp.payload));
     if (tp.payloadLength > 0) {
         memcpy(tp.payload, telemetryString, tp.payloadLength);
     }
+    
+    // Cycle through telemetry packets
+    telemetryPacketIndex = (telemetryPacketIndex + 1) % 4;
 
     // Always prepare ACK payload, even if empty
     radio.writeAckPayload(1, &tp, sizeof(tp));
@@ -192,6 +224,7 @@ static void attemptResyncIfNeeded()
 
 void setup()
 {
+    //SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, NRF24_CSN_PIN);
     Serial.begin(115200);
     delay(50);
 
@@ -200,7 +233,7 @@ void setup()
         Serial.println("WARNING: Some telemetry sensors failed to initialize!");
     }
 
-    SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, NRF24_CSN_PIN);
+    
 
     if (!radio.begin()) {
         // keep going; we'll retry operations

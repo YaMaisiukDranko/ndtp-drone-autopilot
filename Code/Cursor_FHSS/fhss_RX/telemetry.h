@@ -8,7 +8,7 @@
 #include <Adafruit_BMP280.h>
 #include <Adafruit_VL53L0X.h>
 
-// ====== Pin configuration ======
+// ====== Pin configuration for ESP32-C6 Supermini ======
 #define SDA_PIN 8
 #define SCL_PIN 9
 
