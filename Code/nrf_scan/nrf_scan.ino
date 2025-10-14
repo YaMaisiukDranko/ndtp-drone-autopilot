@@ -35,8 +35,8 @@ https://habr.com/ru/post/476716/
 #define CE_PIN    7   // Можно использовать любой GPIO
 #define CSN_PIN   18
 #define MOSI_PIN   19
-#define MISO_PIN   20 
-#define SCK_PIN   21 
+#define MISO_PIN   20
+#define SCK_PIN   21
 RF24 radio(CE_PIN, CSN_PIN); //Arduino UNO
 
 //
