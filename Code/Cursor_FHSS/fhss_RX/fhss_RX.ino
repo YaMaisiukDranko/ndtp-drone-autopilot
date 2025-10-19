@@ -10,15 +10,15 @@
 
 // ====== Pin configuration for ESP32-C6 Supermini ======
 #ifndef NRF24_CE_PIN
-#define NRF24_CE_PIN 7    // CE pin for ESP32-C6 Supermini
+#define NRF24_CE_PIN 44    // CE pin for ESP32-C6 Supermini
 #endif
 #ifndef NRF24_CSN_PIN
-#define NRF24_CSN_PIN 18  // CSN pin for ESP32-C6 Supermini
+#define NRF24_CSN_PIN 43  // CSN pin for ESP32-C6 Supermini
 #endif
 
-#define MOSI_PIN   14
-#define MISO_PIN   15
-#define SCK_PIN    9
+#define MOSI_PIN   9
+#define MISO_PIN   8
+#define SCK_PIN    7
 
 
 static RF24 radio(NRF24_CE_PIN, NRF24_CSN_PIN);
@@ -33,7 +33,7 @@ static const uint8_t FHSS_CHANNELS[10] = { 97, 15, 62, 4, 110, 23, 81, 36, 55, 7
 static const uint8_t NUM_CHANNELS = sizeof(FHSS_CHANNELS) / sizeof(FHSS_CHANNELS[0]);
 
 // Timing
-static const uint32_t MAX_NO_PACKET_MS = 600; // resync if we stop receiving
+static const uint32_t MAX_NO_PACKET_MS = 300; // resync if we stop receiving - faster timeout
 
 // ====== Packets ======
 struct ControlPacket {
@@ -57,7 +57,7 @@ static uint32_t lastPacketMillis = 0;
 static uint32_t lastControlOutput = 0;
 static TelemetryData telemetryData;
 static uint32_t lastTelemetryRead = 0;
-static uint8_t telemetryPacketIndex = 0; // 0=accel, 1=gyro, 2=pressure, 3=distance
+static uint8_t telemetryPacketIndex = 0; // 0=accel, 1=gyro, 2=pressure
 
 // ====== Helpers ======
 static void setRadioChannel(uint8_t channel)
@@ -67,12 +67,12 @@ static void setRadioChannel(uint8_t channel)
 
 static void configureRadioCommon()
 {
-    radio.setDataRate(RF24_2MBPS);
-    radio.setPALevel(RF24_PA_LOW);
-    radio.setCRCLength(RF24_CRC_16);
+    radio.setDataRate(RF24_2MBPS);  // Maximum speed for nRF24L01
+    radio.setPALevel(RF24_PA_LOW);  // Maximum power for better reliability
+    radio.setCRCLength(RF24_CRC_8); // Faster CRC for better performance
     radio.setAutoAck(true);
     radio.enableDynamicPayloads();
-    //radio.setRetries(3, 5);
+    radio.setRetries(1, 3); // Reduced retries for faster transmission
 }
 
 static void enterSyncMode()
@@ -98,8 +98,8 @@ static void prepareAckTelemetry()
     TelemetryPacket tp = {};
     tp.sequence = telemetrySequence++;
 
-    // Read telemetry data from sensors every 50ms to avoid overwhelming
-    if (millis() - lastTelemetryRead > 50) {
+    // Read telemetry data from sensors every 20ms for faster updates
+    if (millis() - lastTelemetryRead > 20) {
         readTelemetryData(&telemetryData);
         lastTelemetryRead = millis();
     }
@@ -120,20 +120,9 @@ static void prepareAckTelemetry()
             snprintf(telemetryString, sizeof(telemetryString), "P:%.0f",
                 telemetryData.pressure);
             break;
-        case 3: // Distance
-            snprintf(telemetryString, sizeof(telemetryString), "D:%.0f",
-                telemetryData.distance);
-            break;
     }
     
-    // Debug: print telemetry string
-    Serial.print("TEL_DEBUG: idx=");
-    Serial.print(telemetryPacketIndex);
-    Serial.print(" len=");
-    Serial.print(strlen(telemetryString));
-    Serial.print(" str='");
-    Serial.print(telemetryString);
-    Serial.println("'");
+    // (debug prints removed to avoid blocking the radio loop)
 
     // Copy formatted data to packet payload
     tp.payloadLength = (uint8_t)min<size_t>(strlen(telemetryString), sizeof(tp.payload));
@@ -142,7 +131,7 @@ static void prepareAckTelemetry()
     }
     
     // Cycle through telemetry packets
-    telemetryPacketIndex = (telemetryPacketIndex + 1) % 4;
+    telemetryPacketIndex = (telemetryPacketIndex + 1) % 3;
 
     // Always prepare ACK payload, even if empty
     radio.writeAckPayload(1, &tp, sizeof(tp));
@@ -195,8 +184,8 @@ static void receiveLoop()
 
         // Print control payload to Serial with controlled frequency
         if (pkt.payloadLength > 0 && pkt.payloadLength <= sizeof(pkt.payload)) {
-            // Limit output frequency to avoid spam - output at most once every 25ms (40Hz max)
-            if (millis() - lastControlOutput > 25) {
+            // Limit output frequency to avoid spam - output at most once every 10ms (100Hz max)
+            if (millis() - lastControlOutput > 10) {
                 Serial.print("CTL:");
                 Serial.write((const uint8_t*)pkt.payload, pkt.payloadLength);
                 Serial.println();

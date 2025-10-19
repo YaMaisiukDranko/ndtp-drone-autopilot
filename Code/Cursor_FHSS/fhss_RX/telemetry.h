@@ -6,16 +6,14 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BMP280.h>
-#include <Adafruit_VL53L0X.h>
 
 // ====== Pin configuration for ESP32-C6 Supermini ======
-#define SDA_PIN 8
-#define SCL_PIN 9
+#define SDA_PIN 5
+#define SCL_PIN 6
 
 // ====== Sensor objects ======
 extern Adafruit_MPU6050 mpu;
 extern Adafruit_BMP280 bmp;
-extern Adafruit_VL53L0X lox;
 
 // ====== Telemetry data structure ======
 struct TelemetryData {
@@ -31,9 +29,6 @@ struct TelemetryData {
     
     // BMP280 Pressure (in hPa)
     float pressure;
-    
-    // VL53L0X Distance (in mm)
-    float distance;
 };
 
 // ====== Function declarations ======

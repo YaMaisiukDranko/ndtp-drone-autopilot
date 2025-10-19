@@ -35,8 +35,8 @@ static const uint8_t FHSS_CHANNELS[10] = { 97, 15, 62, 4, 110, 23, 81, 36, 55, 7
 static const uint8_t NUM_CHANNELS = sizeof(FHSS_CHANNELS) / sizeof(FHSS_CHANNELS[0]);
 
 // Slot timing and retry behavior
-static const uint32_t PACKET_INTERVAL_MS = 5;     // send every 5 ms (200 Hz)
-static const uint32_t MAX_NO_ACK_MS = 500;        // if no ACK telemetry for 500ms, attempt resync
+static const uint32_t PACKET_INTERVAL_MS = 2;     // send every 2 ms (500 Hz) - higher frequency
+static const uint32_t MAX_NO_ACK_MS = 200;        // if no ACK telemetry for 200ms, attempt resync
 
 // ====== Simple packet formats ======
 struct ControlPacket {
@@ -69,12 +69,12 @@ static void setRadioChannel(uint8_t channel)
 static void configureRadioCommon()
 {
     // Data rate and power can be tuned for range/latency
-    radio.setDataRate(RF24_2MBPS);
-    radio.setPALevel(RF24_PA_LOW);
-    radio.setCRCLength(RF24_CRC_16);
+    radio.setDataRate(RF24_2MBPS);  // Maximum speed for nRF24L01
+    radio.setPALevel(RF24_PA_LOW);  // Maximum power for better reliability
+    radio.setCRCLength(RF24_CRC_8); // Faster CRC for better performance
     radio.setAutoAck(true);
     radio.enableDynamicPayloads();
-    radio.setRetries(3, 5); // delay, count
+    radio.setRetries(1, 3); // Reduced retries for faster transmission
 }
 
 static void enterSyncMode()
@@ -175,14 +175,7 @@ static void sendControlAndReadTelemetry()
                 Serial.write((const uint8_t*)telemetry.payload, telemetry.payloadLength);
                 Serial.println();
                 
-                // Debug: print received payload length
-                Serial.print("TEL_DEBUG_TX: len=");
-                Serial.print(telemetry.payloadLength);
-                Serial.print(" data='");
-                for (int i = 0; i < telemetry.payloadLength; i++) {
-                    Serial.print((char)telemetry.payload[i]);
-                }
-                Serial.println("'");
+                // (debug prints removed to reduce Serial overhead)
             }
             lastAckMillis = millis();
         }
@@ -227,9 +220,9 @@ void setup()
 void loop()
 {
     if (!isSynchronized) {
-        // Try to sync at ~10 Hz (every 100ms)
+        // Try to sync at ~20 Hz (every 50ms) - faster sync attempts
         static uint32_t lastSyncAttempt = 0;
-        if (millis() - lastSyncAttempt > 100) {
+        if (millis() - lastSyncAttempt > 50) {
             lastSyncAttempt = millis();
             bool synced = trySyncOnce();
             if (!synced) {

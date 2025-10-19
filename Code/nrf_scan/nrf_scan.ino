@@ -32,11 +32,11 @@ https://habr.com/ru/post/476716/
 //
 
 // Set up nRF24L01 radio on SPI bus plus pins 9 & 10
-#define CE_PIN    7   // Можно использовать любой GPIO
-#define CSN_PIN   18
-#define MOSI_PIN   19
-#define MISO_PIN   20
-#define SCK_PIN   21
+#define CE_PIN    4   // Можно использовать любой GPIO
+#define CSN_PIN   5
+#define MOSI_PIN   15
+#define MISO_PIN   12
+#define SCK_PIN   18 
 RF24 radio(CE_PIN, CSN_PIN); //Arduino UNO
 
 //
