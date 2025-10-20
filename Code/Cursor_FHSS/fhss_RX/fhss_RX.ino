@@ -29,7 +29,7 @@ static const uint8_t rxAddress[5] = {'R','X','A','A','A'}; // this device readin
 
 // ====== FHSS configuration ======
 static const uint8_t SYNC_CHANNEL = 70;
-static const uint8_t FHSS_CHANNELS[10] = { 97, 15, 62, 4, 110, 23, 81, 36, 55, 7 };
+static const uint8_t FHSS_CHANNELS[20] = { 72, 74, 76, 78, 80, 82, 84, 86, 88, 90, 92, 94, 96, 98, 100, 102, 104, 106, 108, 110 };
 static const uint8_t NUM_CHANNELS = sizeof(FHSS_CHANNELS) / sizeof(FHSS_CHANNELS[0]);
 
 // Timing
