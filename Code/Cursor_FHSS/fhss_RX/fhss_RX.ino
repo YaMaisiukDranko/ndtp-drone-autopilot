@@ -29,11 +29,11 @@ static const uint8_t rxAddress[5] = {'R','X','A','A','A'}; // this device readin
 
 // ====== FHSS configuration ======
 static const uint8_t SYNC_CHANNEL = 70;
-static const uint8_t FHSS_CHANNELS[20] = { 72, 74, 76, 78, 80, 82, 84, 86, 88, 90, 92, 94, 96, 98, 100, 102, 104, 106, 108, 110 };
+static const uint8_t FHSS_CHANNELS[7] = { 88, 90, 92, 94, 96, 98, 100 };
 static const uint8_t NUM_CHANNELS = sizeof(FHSS_CHANNELS) / sizeof(FHSS_CHANNELS[0]);
 
 // Timing
-static const uint32_t MAX_NO_PACKET_MS = 300; // resync if we stop receiving - faster timeout
+static const uint32_t MAX_NO_PACKET_MS = 100; // resync if we stop receiving - faster timeout
 
 // ====== Packets ======
 struct ControlPacket {
@@ -49,6 +49,12 @@ struct TelemetryPacket {
     char payload[24];
 };
 
+// ====== Joystick data structure ======
+struct JoystickData {
+    int16_t x_left, y_left;   // Left joystick (Mode 1: Throttle/Yaw)
+    int16_t x_right, y_right; // Right joystick (Mode 1: Pitch/Roll)
+};
+
 // ====== State ======
 static bool isSynchronized = false;
 static uint8_t currentChannelIndex = 0;
@@ -58,11 +64,73 @@ static uint32_t lastControlOutput = 0;
 static TelemetryData telemetryData;
 static uint32_t lastTelemetryRead = 0;
 static uint8_t telemetryPacketIndex = 0; // 0=accel, 1=gyro, 2=pressure
+static JoystickData lastJoystickData = {0};
+static uint32_t lastJoystickOutput = 0;
 
 // ====== Helpers ======
 static void setRadioChannel(uint8_t channel)
 {
     radio.setChannel(channel);
+}
+
+// ====== Joystick functions ======
+static bool parseJoystickData(const char* payload, size_t payloadLength, JoystickData* joystickData)
+{
+    // Expected format: "J:LX:LY:RX:RY" where values are -1000 to +1000
+    if (payloadLength < 10 || payload[0] != 'J' || payload[1] != ':') {
+        return false;
+    }
+    
+    char* endPtr;
+    const char* start = payload + 2; // Skip "J:"
+    
+    // Parse LX (Left X)
+    joystickData->x_left = (int16_t)strtol(start, &endPtr, 10);
+    if (*endPtr != ':') return false;
+    start = endPtr + 1;
+    
+    // Parse LY (Left Y)
+    joystickData->y_left = (int16_t)strtol(start, &endPtr, 10);
+    if (*endPtr != ':') return false;
+    start = endPtr + 1;
+    
+    // Parse RX (Right X)
+    joystickData->x_right = (int16_t)strtol(start, &endPtr, 10);
+    if (*endPtr != ':') return false;
+    start = endPtr + 1;
+    
+    // Parse RY (Right Y)
+    joystickData->y_right = (int16_t)strtol(start, &endPtr, 10);
+    
+    // Validate ranges
+    if (joystickData->x_left < -1000 || joystickData->x_left > 1000 ||
+        joystickData->y_left < -1000 || joystickData->y_left > 1000 ||
+        joystickData->x_right < -1000 || joystickData->x_right > 1000 ||
+        joystickData->y_right < -1000 || joystickData->y_right > 1000) {
+        return false;
+    }
+    
+    return true;
+}
+
+static void outputJoystickData(const JoystickData* joystickData)
+{
+    // Output joystick data with controlled frequency (max 50Hz)
+    if (millis() - lastJoystickOutput > 20) {
+        Serial.print("JOYSTICK: ");
+        Serial.print("LX="); Serial.print(joystickData->x_left);
+        Serial.print(" LY="); Serial.print(joystickData->y_left);
+        Serial.print(" RX="); Serial.print(joystickData->x_right);
+        Serial.print(" RY="); Serial.println(joystickData->y_right);
+        
+        // Mode 1 interpretation
+        Serial.print("MODE1: Throttle="); Serial.print(joystickData->y_left);
+        Serial.print(" Yaw="); Serial.print(joystickData->x_left);
+        Serial.print(" Pitch="); Serial.print(joystickData->y_right);
+        Serial.print(" Roll="); Serial.println(joystickData->x_right);
+        
+        lastJoystickOutput = millis();
+    }
 }
 
 static void configureRadioCommon()
@@ -182,14 +250,23 @@ static void receiveLoop()
         ControlPacket pkt = {};
         memcpy(&pkt, buf, len);
 
-        // Print control payload to Serial with controlled frequency
+        // Process control payload
         if (pkt.payloadLength > 0 && pkt.payloadLength <= sizeof(pkt.payload)) {
-            // Limit output frequency to avoid spam - output at most once every 10ms (100Hz max)
-            if (millis() - lastControlOutput > 10) {
-                Serial.print("CTL:");
-                Serial.write((const uint8_t*)pkt.payload, pkt.payloadLength);
-                Serial.println();
-                lastControlOutput = millis();
+            // Check if this is joystick data
+            if (pkt.payload[0] == 'J' && pkt.payload[1] == ':') {
+                JoystickData joystickData;
+                if (parseJoystickData(pkt.payload, pkt.payloadLength, &joystickData)) {
+                    lastJoystickData = joystickData;
+                    outputJoystickData(&joystickData);
+                }
+            } else {
+                // Print other control data with controlled frequency
+                if (millis() - lastControlOutput > 10) {
+                    Serial.print("CTL:");
+                    Serial.write((const uint8_t*)pkt.payload, pkt.payloadLength);
+                    Serial.println();
+                    lastControlOutput = millis();
+                }
             }
         }
 
@@ -236,6 +313,7 @@ void setup()
     radio.startListening();
 
     enterSyncMode();
+    pinMode(1, OUTPUT);
 }
 
 void loop()
@@ -248,6 +326,7 @@ void loop()
 
     // Minimal delay for high responsiveness
     delayMicroseconds(100);
+    analogWrite(1, abd(y_left)/10);
 }
 
 

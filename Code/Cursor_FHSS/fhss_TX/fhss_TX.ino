@@ -20,7 +20,27 @@
 
 #define MOSI_PIN   15
 #define MISO_PIN   12
-#define SCK_PIN   18 
+#define SCK_PIN   18
+
+// ====== Joystick configuration ======
+#define X_LEFT_PIN  16
+#define Y_LEFT_PIN  7
+#define X_RIGHT_PIN 14
+#define Y_RIGHT_PIN 3
+
+// Joystick calibration structure
+struct JoystickCalibration {
+    int16_t x_left_min, x_left_max, x_left_center;
+    int16_t y_left_min, y_left_max, y_left_center;
+    int16_t x_right_min, x_right_max, x_right_center;
+    int16_t y_right_min, y_right_max, y_right_center;
+};
+
+// Joystick data structure
+struct JoystickData {
+    int16_t x_left, y_left;   // Left joystick (Mode 1: Throttle/Yaw)
+    int16_t x_right, y_right; // Right joystick (Mode 1: Pitch/Roll)
+}; 
 // ====== Radio setup ======
 static RF24 radio(NRF24_CE_PIN, NRF24_CSN_PIN);
 
@@ -31,12 +51,12 @@ static const uint8_t rxAddress[5] = {'R','X','A','A','A'}; // for reading ACK pa
 // ====== FHSS configuration ======
 // One fixed channel for sync, then 10 pseudo-random channels for hopping (0..125 valid for nRF24)
 static const uint8_t SYNC_CHANNEL = 70;
-static const uint8_t FHSS_CHANNELS[20] = { 72, 74, 76, 78, 80, 82, 84, 86, 88, 90, 92, 94, 96, 98, 100, 102, 104, 106, 108, 110};
+static const uint8_t FHSS_CHANNELS[7] = {88, 90, 92, 94, 96, 98, 100};
 static const uint8_t NUM_CHANNELS = sizeof(FHSS_CHANNELS) / sizeof(FHSS_CHANNELS[0]);
 
 // Slot timing and retry behavior
 static const uint32_t PACKET_INTERVAL_MS = 2;     // send every 2 ms (500 Hz) - higher frequency
-static const uint32_t MAX_NO_ACK_MS = 200;        // if no ACK telemetry for 200ms, attempt resync
+static const uint32_t MAX_NO_ACK_MS = 100;        // if no ACK telemetry for 200ms, attempt resync
 
 // ====== Simple packet formats ======
 struct ControlPacket {
@@ -60,10 +80,121 @@ static uint32_t lastPacketMillis = 0;
 static uint32_t lastAckMillis = 0;
 static uint32_t lastSyncWaitOutput = 0;
 
+// ====== Joystick state ======
+static JoystickCalibration calibration = {0};
+static JoystickData currentJoystickData = {0};
+static bool calibrationComplete = false;
+static uint32_t lastJoystickRead = 0;
+
 // ====== Helpers ======
 static void setRadioChannel(uint8_t channel)
 {
     radio.setChannel(channel);
+}
+
+// ====== Joystick functions ======
+static void performJoystickCalibration()
+{
+    Serial.println("=== JOYSTICK CALIBRATION ===");
+    Serial.println("Center calibration - 3 seconds");
+    Serial.println("Keep joysticks in center position...");
+    
+    // Center calibration (3 seconds)
+    uint32_t startTime = millis();
+    int32_t x_left_sum = 0, y_left_sum = 0, x_right_sum = 0, y_right_sum = 0;
+    int32_t sampleCount = 0;
+    
+    while (millis() - startTime < 3000) {
+        x_left_sum += analogRead(X_LEFT_PIN);
+        y_left_sum += analogRead(Y_LEFT_PIN);
+        x_right_sum += analogRead(X_RIGHT_PIN);
+        y_right_sum += analogRead(Y_RIGHT_PIN);
+        sampleCount++;
+        delay(10);
+    }
+    
+    calibration.x_left_center = x_left_sum / sampleCount;
+    calibration.y_left_center = y_left_sum / sampleCount;
+    calibration.x_right_center = x_right_sum / sampleCount;
+    calibration.y_right_center = y_right_sum / sampleCount;
+    
+    Serial.println("Center calibration complete!");
+    Serial.print("Left center: X="); Serial.print(calibration.x_left_center);
+    Serial.print(" Y="); Serial.println(calibration.y_left_center);
+    Serial.print("Right center: X="); Serial.print(calibration.x_right_center);
+    Serial.print(" Y="); Serial.println(calibration.y_right_center);
+    
+    Serial.println("Range calibration - 5 seconds");
+    Serial.println("Move joysticks to all extreme positions...");
+    
+    // Range calibration (5 seconds)
+    startTime = millis();
+    calibration.x_left_min = calibration.x_left_max = calibration.x_left_center;
+    calibration.y_left_min = calibration.y_left_max = calibration.y_left_center;
+    calibration.x_right_min = calibration.x_right_max = calibration.x_right_center;
+    calibration.y_right_min = calibration.y_right_max = calibration.y_right_center;
+    
+    while (millis() - startTime < 5000) {
+        int16_t x_left = analogRead(X_LEFT_PIN);
+        int16_t y_left = analogRead(Y_LEFT_PIN);
+        int16_t x_right = analogRead(X_RIGHT_PIN);
+        int16_t y_right = analogRead(Y_RIGHT_PIN);
+        
+        if (x_left < calibration.x_left_min) calibration.x_left_min = x_left;
+        if (x_left > calibration.x_left_max) calibration.x_left_max = x_left;
+        if (y_left < calibration.y_left_min) calibration.y_left_min = y_left;
+        if (y_left > calibration.y_left_max) calibration.y_left_max = y_left;
+        if (x_right < calibration.x_right_min) calibration.x_right_min = x_right;
+        if (x_right > calibration.x_right_max) calibration.x_right_max = x_right;
+        if (y_right < calibration.y_right_min) calibration.y_right_min = y_right;
+        if (y_right > calibration.y_right_max) calibration.y_right_max = y_right;
+        
+        delay(10);
+    }
+    
+    Serial.println("Range calibration complete!");
+    Serial.print("Left range: X="); Serial.print(calibration.x_left_min);
+    Serial.print("-"); Serial.print(calibration.x_left_max);
+    Serial.print(" Y="); Serial.print(calibration.y_left_min);
+    Serial.print("-"); Serial.println(calibration.y_left_max);
+    Serial.print("Right range: X="); Serial.print(calibration.x_right_min);
+    Serial.print("-"); Serial.print(calibration.x_right_max);
+    Serial.print(" Y="); Serial.print(calibration.y_right_min);
+    Serial.print("-"); Serial.println(calibration.y_right_max);
+    
+    calibrationComplete = true;
+    Serial.println("=== CALIBRATION COMPLETE ===");
+}
+
+static void readJoystickData()
+{
+    if (!calibrationComplete) return;
+    
+    // Read raw values
+    int16_t x_left_raw = analogRead(X_LEFT_PIN);
+    int16_t y_left_raw = analogRead(Y_LEFT_PIN);
+    int16_t x_right_raw = analogRead(X_RIGHT_PIN);
+    int16_t y_right_raw = analogRead(Y_RIGHT_PIN);
+    
+    // Convert to normalized values (-1000 to +1000)
+    currentJoystickData.x_left = map(x_left_raw, calibration.x_left_min, calibration.x_left_max, -1000, 1000);
+    currentJoystickData.y_left = map(y_left_raw, calibration.y_left_min, calibration.y_left_max, -1000, 1000);
+    currentJoystickData.x_right = map(x_right_raw, calibration.x_right_min, calibration.x_right_max, -1000, 1000);
+    currentJoystickData.y_right = map(y_right_raw, calibration.y_right_min, calibration.y_right_max, -1000, 1000);
+    
+    // Clamp values to ensure they stay within bounds
+    currentJoystickData.x_left = constrain(currentJoystickData.x_left, -1000, 1000);
+    currentJoystickData.y_left = constrain(currentJoystickData.y_left, -1000, 1000);
+    currentJoystickData.x_right = constrain(currentJoystickData.x_right, -1000, 1000);
+    currentJoystickData.y_right = constrain(currentJoystickData.y_right, -1000, 1000);
+}
+
+static void formatJoystickData(char* buffer, size_t bufferSize)
+{
+    // Format: "J:LX:LY:RX:RY" where values are -1000 to +1000
+    snprintf(buffer, bufferSize, "J:%d:%d:%d:%d", 
+        currentJoystickData.x_left, currentJoystickData.y_left,
+        currentJoystickData.x_right, currentJoystickData.y_right);
 }
 
 static void configureRadioCommon()
@@ -132,27 +263,25 @@ static bool trySyncOnce()
 
 static void sendControlAndReadTelemetry()
 {
-    // Prepare control payload from Serial, truncate to 24 bytes
+    // Prepare control payload from joystick data
     ControlPacket pkt = {};
     pkt.sequence = controlSequence++;
     pkt.channelIndex = currentChannelIndex;
 
-    char temp[64] = {0};
-    size_t readLen = 0;
-    uint32_t tStart = millis();
-    // Non-blocking small window to accumulate available bytes
-    while (Serial.available() && readLen < sizeof(temp) - 1) {
-        int c = Serial.read();
-        if (c < 0) break;
-        temp[readLen++] = (char)c;
-        // avoid stalling the loop
-        if (millis() - tStart > 2) break;
+    // Read joystick data every 20ms for smooth control
+    if (millis() - lastJoystickRead > 20) {
+        readJoystickData();
+        lastJoystickRead = millis();
     }
 
+    // Format joystick data for transmission
+    char joystickBuffer[32] = {0};
+    formatJoystickData(joystickBuffer, sizeof(joystickBuffer));
+
     // Copy up to 24 bytes into packet
-    pkt.payloadLength = (uint8_t)min<size_t>(readLen, sizeof(pkt.payload));
+    pkt.payloadLength = (uint8_t)min<size_t>(strlen(joystickBuffer), sizeof(pkt.payload));
     if (pkt.payloadLength > 0) {
-        memcpy(pkt.payload, temp, pkt.payloadLength);
+        memcpy(pkt.payload, joystickBuffer, pkt.payloadLength);
     }
 
     // Hop channel and transmit
@@ -198,6 +327,15 @@ void setup()
 {
     Serial.begin(115200);
     delay(50);
+
+    // Initialize joystick pins
+    pinMode(X_LEFT_PIN, INPUT);
+    pinMode(Y_LEFT_PIN, INPUT);
+    pinMode(X_RIGHT_PIN, INPUT);
+    pinMode(Y_RIGHT_PIN, INPUT);
+
+    // Perform joystick calibration
+    performJoystickCalibration();
 
     // Initialize SPI explicitly as requested
     SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, NRF24_CSN_PIN);
