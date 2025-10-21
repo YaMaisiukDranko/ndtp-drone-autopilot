@@ -7,6 +7,9 @@
 #include <SPI.h>
 #include <RF24.h>
 #include "telemetry.h"
+#include "joystick.h"    // <-- общий тип JoystickData
+#include "stabilizer.h"
+#include "mixer.h"
 
 // ====== Pin configuration for ESP32-C6 Supermini ======
 #ifndef NRF24_CE_PIN
@@ -47,12 +50,6 @@ struct TelemetryPacket {
     uint16_t sequence;
     uint8_t payloadLength;
     char payload[24];
-};
-
-// ====== Joystick data structure ======
-struct JoystickData {
-    int16_t x_left, y_left;   // Left joystick (Mode 1: Throttle/Yaw)
-    int16_t x_right, y_right; // Right joystick (Mode 1: Pitch/Roll)
 };
 
 
@@ -323,8 +320,9 @@ static void attemptResyncIfNeeded()
     }
 }
 
-void setup()
-{
+void setup(){
+    mixerInit();
+    stabilizerInit();
     // Initialize motor output pins
     for (int i = 0; i < 4; ++i) {
         pinMode(MOTOR_PINS[i], OUTPUT);
@@ -364,9 +362,22 @@ void loop()
     receiveLoop();
     attemptResyncIfNeeded();
 
-    // Minimal delay for high responsiveness
+    
+    static uint32_t prevMicros = micros();
+    uint32_t now = micros();
+    float dt = (now - prevMicros) * 1e-6f;
+    if (dt < 1e-6f) dt = 1e-6f;
+    prevMicros = now;
+
+    TelemetryData sens;
+    readTelemetryData(&sens);
+
+    uint8_t m1, m2, m3, m4;
+    stabilizeMix(lastJoystickData, sens, dt, &m1, &m2, &m3, &m4);
+    mixerWrite(m1, m2, m3, m4);
+// Minimal delay for high responsiveness
     delayMicroseconds(100);
-    motorControl();
+    // motorControl() replaced by mixerWrite
 }
 
 
