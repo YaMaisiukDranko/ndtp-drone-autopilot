@@ -55,6 +55,8 @@ struct JoystickData {
     int16_t x_right, y_right; // Right joystick (Mode 1: Pitch/Roll)
 };
 
+
+
 // ====== State ======
 static bool isSynchronized = false;
 static uint8_t currentChannelIndex = 0;
@@ -65,6 +67,39 @@ static TelemetryData telemetryData;
 static uint32_t lastTelemetryRead = 0;
 static uint8_t telemetryPacketIndex = 0; // 0=accel, 1=gyro, 2=pressure
 static JoystickData lastJoystickData = {0};
+
+// ====== Motor control (PWM on GPIO 1,2,3,4) ======
+static const int MOTOR_PINS[4] = {1, 2, 3, 4};
+
+static inline uint8_t mapThrottleToPwm(int16_t raw)
+{
+    // Инвертируем: внизу (y_left = -1000) = 0, вверху (y_left = +1000) = 1000
+    if (raw < -1000) raw = -1000;
+    if (raw >  1000) raw =  1000;
+
+    // Инверсия оси: чем выше стик, тем больше газ
+    int16_t inverted = -raw; // теперь верх = -1000 → ниж = +1000
+
+    long shifted = (long)inverted + 1000;   // диапазон 0..2000
+    long pwm = (shifted * 255L) / 2000L;    // 0..255 для analogWrite
+
+    if (pwm < 0)   pwm = 0;
+    if (pwm > 255) pwm = 255;
+
+    return (uint8_t)pwm;
+}
+
+
+static inline void motorControl()
+{
+    uint8_t pwm = mapThrottleToPwm(lastJoystickData.y_left);
+    for (int i = 0; i < 4; ++i) {
+        analogWrite(MOTOR_PINS[i], pwm);
+    }
+}
+
+
+
 static uint32_t lastJoystickOutput = 0;
 
 // ====== Helpers ======
@@ -290,6 +325,11 @@ static void attemptResyncIfNeeded()
 
 void setup()
 {
+    // Initialize motor output pins
+    for (int i = 0; i < 4; ++i) {
+        pinMode(MOTOR_PINS[i], OUTPUT);
+    }
+
     //SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, NRF24_CSN_PIN);
     Serial.begin(115200);
     delay(50);
@@ -326,7 +366,7 @@ void loop()
 
     // Minimal delay for high responsiveness
     delayMicroseconds(100);
-    analogWrite(1, abd(y_left)/10);
+    motorControl();
 }
 
 
