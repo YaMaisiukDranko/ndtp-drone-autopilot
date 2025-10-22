@@ -13,6 +13,13 @@ static const int16_t STICK_ARM_HOLD = 800;   // мс удержания
 static const int16_t STICK_MIN = -900;       // низкий газ
 static const int16_t STICK_EDGE =  900;      // край по рысканию
 static const uint8_t IDLE_PWM = 0;           // 0 => моторы стоят до реального газа
+static const bool THROTTLE_REVERSED = true;  // true = верх стика -> 0, низ -> 255 (инвертируем обратно)
+
+
+// ===== Sign conventions (поставь -1 где надо развернуть) =====
+static const int ROLL_SIGN  = +1;
+static const int PITCH_SIGN = -1;  // <-- ДЛЯ ТЕБЯ: перевёрнут вперёд => ставим -1
+static const int YAW_SIGN   = +1;
 
 // Helper
 static inline float mapf(float x, float in_min, float in_max, float out_min, float out_max) {
@@ -24,15 +31,23 @@ static inline int16_t deadband(int16_t v, int16_t db=50) {
   return (abs(v) <= db) ? 0 : v;
 }
 
-// Throttle mapping: -1000..+1000 -> 0..255 (верх = больше)
 static inline uint8_t throttleToPwm(int16_t y_left) {
   if (y_left < -1000) y_left = -1000;
   if (y_left >  1000) y_left =  1000;
-  long shifted = (long)(y_left + 1000); // 0..2000
-  long pwm = (shifted * 255L) / 2000L;  // 0..255
-  if (pwm < 0)   pwm = 0;
-  if (pwm > 255) pwm = 255;
-  return (uint8_t)pwm;
+
+  long scaled;
+  if (THROTTLE_REVERSED) {
+    // инверсия: вверх (+1000) -> 0, вниз (-1000) -> 255
+    long inv = (long)(-y_left);               // +1000..-1000
+    scaled = (inv + 1000) * 255L / 2000L;     // 0..255
+  } else {
+    // стандарт: вверх (+1000) -> 255, вниз (-1000) -> 0
+    scaled = (long)(y_left + 1000) * 255L / 2000L;
+  }
+
+  if (scaled < 0)   scaled = 0;
+  if (scaled > 255) scaled = 255;
+  return (uint8_t)scaled;
 }
 
 void stabilizerInit() {
@@ -102,15 +117,16 @@ void stabilizeMix(const JoystickData& js_raw, const TelemetryData& sens, float d
   }
 
   // 3) Setpoints (deg / deg/s)
-  float sp_roll      = mapf((float)js.x_right, -1000.0f, 1000.0f, -25.0f, 25.0f);
-  float sp_pitch     = mapf((float)js.y_right, -1000.0f, 1000.0f, -25.0f, 25.0f);
-  float sp_yaw_rate  = mapf((float)js.x_left,  -1000.0f, 1000.0f, -150.0f, 150.0f);
+float sp_roll      = mapf((float)js.x_right, -1000.0f, 1000.0f, -25.0f, 25.0f);
+float sp_pitch     = mapf((float)js.y_right, -1000.0f, 1000.0f, -25.0f, 25.0f);
+float sp_yaw_rate  = mapf((float)js.x_left,  -1000.0f, 1000.0f, -150.0f, 150.0f);
 
-  // 4) Controllers (scale with throttle to calm near-idle)
-  float throttle_scale = throttle_pwm / 255.0f; // 0..1
-  float u_roll  = throttle_scale * pidStep(pid_roll,  sp_roll,  att.roll,  dt, att.gx);
-  float u_pitch = throttle_scale * pidStep(pid_pitch, sp_pitch, att.pitch, dt, att.gy);
-  float u_yaw   = throttle_scale * pidStep(pid_yaw_rate, sp_yaw_rate, att.gz, dt);
+// 4) Controllers (с учётом знаков и масштабирования газом)
+float throttle_scale = 0.6f + 0.4f * (throttle_pwm / 255.0f);
+float u_roll  = throttle_scale * pidStep(pid_roll,   sp_roll,               ROLL_SIGN  * att.roll,  dt, ROLL_SIGN  * att.gx);
+float u_pitch = throttle_scale * pidStep(pid_pitch,  sp_pitch,              PITCH_SIGN * att.pitch, dt, PITCH_SIGN * att.gy);
+float u_yaw   = throttle_scale * pidStep(pid_yaw_rate, sp_yaw_rate,         YAW_SIGN   * att.gz,    dt);
+
 
   // 5) Mixer (X)
   float base = (float)max<uint8_t>(throttle_pwm, IDLE_PWM);

@@ -7,6 +7,8 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RF24.h>
+#include "tft_console.h"
+TftConsole gConsole;
 
 // ====== Pin configuration (adjust to your wiring) ======
 // ESP32-S3 hardware SPI pins can be configured. Keep MOSI/MISO/SCK on hardware SPI pins for best performance.
@@ -353,6 +355,10 @@ void setup()
     radio.openReadingPipe(1, rxAddress);
 
     enterSyncMode();
+
+    gConsole.begin();
+    gConsole.println(F("TX booting..."));
+
 }
 
 void loop()
@@ -384,6 +390,9 @@ void loop()
     
     // Minimal delay for high frequency operation
     delayMicroseconds(100);
+
+    gConsole.updateArmingBanner();     // читает GPIO19 и пишет Armed/Disarmed
+    gConsole.updateFromSerial(Serial);
 }
 
 
